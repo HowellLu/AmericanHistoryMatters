@@ -1,0 +1,401 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+require(flexmix)
+require(TraMineR)
+require(TraMineRextras)
+require(dplyr)
+require(stringr)
+library(tidyr)
+
+
+NSLY97Data <- read.csv("ProcessedDF.csv", header=TRUE, stringsAsFactors=FALSE)
+NSLY97Data$ID <- seq(1, 3551)
+
+NSLY97Data <- NSLY97Data %>%
+  select(-X)
+
+#Sample <- read.csv("ProperSample.csv", header=TRUE, stringsAsFactors=FALSE)
+
+
+
+
+
+```
+
+
+```{r}
+#Get Values 
+age_columns <- grep("_\\d+$", names(NSLY97Data), value = TRUE)
+
+non_age_columns <- setdiff(names(NSLY97Data), age_columns)
+
+# Reshape the data
+LongNSLY97Data <- NSLY97Data %>%
+  pivot_longer(
+    cols = all_of(age_columns),
+    names_to = c(".value", "t"),
+    names_pattern = "(.*)_(\\d+)$"
+  ) %>%
+  mutate(t = as.integer(t))  # Ensure 't' is an integer
+
+# Reorder columns if needed
+LongNSLY97Data <- LongNSLY97Data %>%
+  select(all_of(non_age_columns), t, everything())
+
+LongNSLY97Data$EducationStat <- as.factor(LongNSLY97Data$EducationStat)
+LongNSLY97Data$EmploymentStatus <- as.factor(LongNSLY97Data$EMP_HOURS)
+
+LongNSLY97Data$t <- LongNSLY97Data$t - 16
+
+#LongNSLY97Data$t <- as.factor(LongNSLY97Data$t)
+
+LongNSLY97Data <- LongNSLY97Data %>%
+  select(-EMP_HOURS)
+
+LongNSLY97Data$HasSibling <- as.factor(LongNSLY97Data$HasSibling)
+LongNSLY97Data$Sex <- as.factor(LongNSLY97Data$Sex)
+LongNSLY97Data$SingleorDoubleParent <- as.factor(LongNSLY97Data$SingleorDoubleParent)
+#LongNSLY97Data$FinalRelationshipStat <- as.factor(LongNSLY97Data$FinalRelationshipStat)
+```
+
+
+
+
+```{r}
+LongNSLY97DataLag <- LongNSLY97Data %>%
+  group_by(ID) %>%
+  mutate(FinalRelationshipStatLag1 = lag(FinalRelationshipStat, n = 1)) %>%
+  ungroup()
+```
+
+```{r}
+# Generates code to create the Data for Logistic Regression and Random Forest Trees
+write.csv(LongNSLY97Data, "NSLYData.csv")
+write.csv(LongNSLY97DataLag, "WithLaggedData.csv")
+```
+
+
+## Generating the Production Model with ALL the Data used for Training
+
+```{r}
+Krange <- 11:11  #SLOW!!!
+nRep <- 1 #number of random starts (slow, but important)
+
+
+set.seed(23675)
+##if (!exists("fmm3")) { # check whether data is loaded
+
+Comp11FullDS <- stepFlexmix(.~0|ID, k=Krange, nrep=nRep,
+                    model=FLXMRmultinom(FinalRelationshipStat~t+Sex+SingleorDoubleParent+EmploymentStatus+EducationStat+HasSibling),
+                    data=LongNSLY97Data, control=list(verbose=1, minprior=0.025))
+```
+
+
+
+```{r}
+
+
+SamplesToRemove <- read.csv("ProperSample.csv", header=TRUE, stringsAsFactors=FALSE)
+TheSampleList<-SamplesToRemove['X0']
+
+LongNSLY97Data <- LongNSLY97Data %>% 
+  filter(!ID %in% TheSampleList$X0)
+
+
+```
+
+## Code for Generating the Model with an 80:20 Train/Test Split
+
+
+```{r}
+Krange <- 3:14  #SLOW!!!
+nRep <- 1 #number of random starts (slow, but important)
+
+
+set.seed(23675)
+##if (!exists("fmm3")) { # check whether data is loaded
+
+FullRangeForBIC <- stepFlexmix(.~0|ID, k=Krange, nrep=nRep,
+                    model=FLXMRmultinom(FinalRelationshipStat~t+Sex+SingleorDoubleParent+EmploymentStatus+EducationStat+HasSibling),
+                    data=LongNSLY97Data, control=list(verbose=1, minprior=0.025))
+```
+
+
+
+```{r}
+LongNSLY97DataLag <- LongNSLY97Data %>%
+  group_by(ID) %>%
+  mutate(FinalRelationshipStatLag1 = lag(FinalRelationshipStat, n = 1)) %>%
+  ungroup()
+
+LongNSLY97DataLag$FinalRelationshipStatLag1[is.na(LongNSLY97DataLag$FinalRelationshipStatLag1)] <- 99
+
+LongNSLY97DataLag$FinalRelationshipStat <- as.factor(LongNSLY97DataLag$FinalRelationshipStat)
+LongNSLY97DataLag$FinalRelationshipStatLag1 <- as.factor(LongNSLY97DataLag$FinalRelationshipStatLag1)
+
+LongNSLY97Data$FinalRelationshipStat <- as.factor(LongNSLY97Data$FinalRelationshipStat)
+
+
+```
+
+
+```{r}
+Krange <- 3:3  #SLOW!!!
+nRep <- 2 #number of random starts (slow, but important)
+
+
+set.seed(87654)
+##if (!exists("fmm3")) { # check whether data is loaded
+
+NineTryConverge <- stepFlexmix(.~0|ID, k=Krange, nrep=nRep,
+                    model=FLXMRmultinom(FinalRelationshipStat~t+Sex+SingleorDoubleParent+EmploymentStatus+EducationStat+HasSibling+FinalRelationshipStatLag1),
+                    data=LongNSLY97DataLag, control=list(verbose=1, minprior=0.05,iter.max=1000,tolerance = 5e-08))
+```
+
+
+
+## How we got the value for the FirstDataset
+
+
+
+### USE MODEL THAT WAS TRAINED ON THE TRAIN DATASET SO THAT WE CAN CLASSIFY IT OTHER MODELS # LOAD FullRangeForBIC
+
+
+```{r}
+filename <- file.choose()
+FinalResultSetTrain <- readRDS(filename)
+```
+
+```{r}
+BIC(FinalResultSetTrain)
+AIC(FinalResultSetTrain)
+```
+
+
+```{r}
+PosteriorCheck <- FinalResultSetTrain@models[[9]]@posterior$scaled
+```
+
+```{r}
+head(PosteriorCheck)
+```
+
+
+
+```{r}
+usemodel <- FinalResultSetTrain@models[[9]]
+
+comp <- lapply(usemodel@components, "[[", 1)
+
+Matrix1 <- comp$Comp.1@parameters$coef
+Matrix2 <- comp$Comp.2@parameters$coef
+Matrix3 <- comp$Comp.3@parameters$coef
+Matrix4 <- comp$Comp.4@parameters$coef
+Matrix5 <- comp$Comp.5@parameters$coef
+Matrix6 <- comp$Comp.6@parameters$coef
+Matrix7 <- comp$Comp.7@parameters$coef
+Matrix8 <- comp$Comp.8@parameters$coef
+Matrix9 <- comp$Comp.9@parameters$coef
+Matrix10 <- comp$Comp.10@parameters$coef
+Matrix11 <- comp$Comp.11@parameters$coef
+
+
+
+XMatrix <- usemodel@model[[1]]@x
+YMatrix <- usemodel@model[[1]]@y
+
+
+Priors <- usemodel@prior
+
+write.csv(as.data.frame(Matrix1), 'coef1.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix2), 'coef2.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix3), 'coef3.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix4), 'coef4.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix5), 'coef5.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix6), 'coef6.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix7), 'coef7.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix8), 'coef8.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix9), 'coef9.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix10), 'coef10.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix11), 'coef11.csv', row.names = FALSE)
+
+
+write.csv(as.data.frame(Priors), 'Priors.csv', row.names = FALSE)
+
+
+
+```
+
+
+# This is the value of the FULL Coefficient SET. All RECORDS ARE INCLUDED # LOAD Comp11FullDS
+
+```{r}
+filename <- file.choose()
+FinalResultSet <- readRDS(filename)
+```
+
+
+```{r}
+BIC(FinalResultSet)
+```
+
+
+
+```{r}
+usemodel <- FinalResultSet
+
+comp <- lapply(usemodel@components, "[[", 1)
+
+Matrix1 <- comp$Comp.1@parameters$coef
+Matrix2 <- comp$Comp.2@parameters$coef
+Matrix3 <- comp$Comp.3@parameters$coef
+Matrix4 <- comp$Comp.4@parameters$coef
+Matrix5 <- comp$Comp.5@parameters$coef
+Matrix6 <- comp$Comp.6@parameters$coef
+Matrix7 <- comp$Comp.7@parameters$coef
+Matrix8 <- comp$Comp.8@parameters$coef
+Matrix9 <- comp$Comp.9@parameters$coef
+Matrix10 <- comp$Comp.10@parameters$coef
+Matrix11 <- comp$Comp.11@parameters$coef
+
+
+
+XMatrix <- usemodel@model[[1]]@x
+YMatrix <- usemodel@model[[1]]@y
+
+
+Priors <- usemodel@prior
+
+write.csv(as.data.frame(Matrix1), 'coef1full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix2), 'coef2full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix3), 'coef3full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix4), 'coef4full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix5), 'coef5full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix6), 'coef6full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix7), 'coef7full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix8), 'coef8full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix9), 'coef9full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix10), 'coef10full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix11), 'coef11full.csv', row.names = FALSE)
+
+write.csv(as.data.frame(XMatrix), 'XMatrixfull.csv', row.names = FALSE)
+write.csv(as.data.frame(YMatrix), 'YMatrixfull.csv', row.names = FALSE)
+write.csv(as.data.frame(Priors), 'PriorsFull.csv', row.names = FALSE)
+write.csv(as.data.frame(ClusterClassification), 'ClusterClassification.csv', row.names = FALSE)
+
+```
+
+
+# DUMMY CODE TO EXTRACT FORMATTED DS COMPONENTS # LOAD THE DUMMYFILE
+
+```{r}
+filename <- file.choose()
+DummyModel <- readRDS(filename)
+```
+
+
+```{r}
+XMatrix <- DummyModel@model[[1]]@x
+YMatrix <- DummyModel@model[[1]]@y
+
+
+write.csv(as.data.frame(XMatrix), 'ARXMatrix.csv', row.names = FALSE)
+write.csv(as.data.frame(YMatrix), 'ARYMatrix.csv', row.names = FALSE)
+
+```
+
+
+
+#CODE TO GET THE COMPONENTS OF THE DATASET WITH AR LAG 1 # LOAD OneLastModel
+
+
+```{r}
+filename <- file.choose()
+FinalResultSetTrainAR1 <- readRDS(filename)
+
+```
+
+```{r}
+BIC(FinalResultSetTrainAR1)
+```
+```{r}
+AIC(FinalResultSetTrainAR1)
+```
+
+
+
+
+```{r}
+usemodel <- FinalResultSetTrainAR1@models[[3]]
+
+comp <- lapply(usemodel@components, "[[", 1)
+
+Matrix1 <- comp$Comp.1@parameters$coef
+Matrix2 <- comp$Comp.2@parameters$coef
+Matrix3 <- comp$Comp.3@parameters$coef
+Matrix4 <- comp$Comp.4@parameters$coef
+#Matrix5 <- comp$Comp.5@parameters$coef
+#Matrix6 <- comp$Comp.6@parameters$coef
+#Matrix7 <- comp$Comp.7@parameters$coef
+#Matrix8 <- comp$Comp.8@parameters$coef
+#Matrix9 <- comp$Comp.9@parameters$coef
+#Matrix10 <- comp$Comp.10@parameters$coef
+#Matrix11 <- comp$Comp.11@parameters$coef
+
+
+
+XMatrix <- usemodel@model[[1]]@x
+YMatrix <- usemodel@model[[1]]@y
+
+
+Priors <- usemodel@prior
+
+
+```
+
+```{r}
+
+write.csv(as.data.frame(Matrix1), 'ARcoef1full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix2), 'ARcoef2full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix3), 'ARcoef3full.csv', row.names = FALSE)
+write.csv(as.data.frame(Matrix4), 'ARcoef4full.csv', row.names = FALSE)
+#write.csv(as.data.frame(Matrix5), 'ARcoef5full.csv', row.names = FALSE)
+#write.csv(as.data.frame(Matrix6), 'ARcoef6full.csv', row.names = FALSE)
+#write.csv(as.data.frame(Matrix7), 'ARcoef7full.csv', row.names = FALSE)
+#write.csv(as.data.frame(Matrix8), 'ARcoef8full.csv', row.names = FALSE)
+#write.csv(as.data.frame(Matrix9), 'ARcoef9full.csv', row.names = FALSE)
+#write.csv(as.data.frame(Matrix10), 'ARcoef10full.csv', row.names = FALSE)
+#write.csv(as.data.frame(Matrix11), 'ARcoef11full.csv', row.names = FALSE)
+
+#write.csv(as.data.frame(XMatrix), 'ARXMatrix.csv', row.names = FALSE)
+#write.csv(as.data.frame(YMatrix), 'ARYMatrix.csv', row.names = FALSE)
+write.csv(as.data.frame(Priors), 'ARPriorsFull.csv', row.names = FALSE)
+
+#probClass.1 <- usemodel@posterior$scaled
+
+#ClusterClassificationAR <- apply(probClass.1,1,which.max)
+
+#write.csv(as.data.frame(ClusterClassificationAR), 'ClusterClassificationAR.csv', row.names = FALSE)
+```
+
+
+
+```{r}
+filename <- file.choose()
+FinalResultSetTrainAR1 <- readRDS(filename)
+
+```
+
+
+
+
+```{r}
+BIC(FinalResultSetTrainAR1)
+```
+
+
+
